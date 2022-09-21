@@ -189,8 +189,6 @@ def main(argv=sys.argv[1:]):
         cmd_hash_object(args)
     elif args.command == "init":
         cmd_init(args)
-    elif args.command == "log":
-        cmd_log(args)
     elif args.command == "ls-tree":
         cmd_ls_tree(args)
     elif args.command == "merge":
@@ -381,15 +379,16 @@ def kvlm_parse(raw, start=0, dct=None):
 
     return kvlm_parse(raw, start=end + 1, dct=dct)
 
-def kvlm_serialize(kvlm):
+
+def key_value_list_with_message_serialize(key_value_list_with_message):
     ret = b''
 
     # Output fields
-    for k in kvlm.keys():
+    for k in key_value_list_with_message.keys():
         # Skip the message itself
         if k == b'':
             continue
-        val = kvlm[k]
+        val = key_value_list_with_message[k]
         # Normalize to a list
         if type(val) != list:
             val = [val]
@@ -398,4 +397,18 @@ def kvlm_serialize(kvlm):
             ret += k + b'' + (v.replace(b'\n', b'\n ')) + b'\n'
 
     # Append message
-    ret += b'\n' = kvlm[b'']
+    ret += b'\n' + key_value_list_with_message[b'']
+
+    return ret
+
+
+class GitCommit(GitObject):
+    fmt = b'commit'
+
+    def deserialize(self, data):
+        self.key_value_list_with_message = kvlm_parse(data)
+
+    def serialize(self):
+        return key_value_list_with_message_serialize(self.key_value_list_with_message)
+
+
