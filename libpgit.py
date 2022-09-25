@@ -339,7 +339,7 @@ def kvlm_parse(raw, start=0, dct=None):
     spc = raw.find(b' ', start)
     nl = raw.find(b'\n', start)
 
-    # If space appers before newline, we have a keyword.
+    # If space appears before newline, we have a keyword.
 
     """
     Base case:
@@ -357,7 +357,7 @@ def kvlm_parse(raw, start=0, dct=None):
     key = raw[start:spc]
 
     # Find the end of the value.
-    # Continuaton lines begin with a space, so we loop until we find a "\n" not followed by a space.
+    # Continuation lines begin with a space, so we loop until we find a "\n" not followed by a space.
     end = start
     while True:
         end = raw.find(b'\n', end + 1)
@@ -412,3 +412,110 @@ class GitCommit(GitObject):
         return key_value_list_with_message_serialize(self.key_value_list_with_message)
 
 
+class GitTreeLeaf:
+    def __init__(self, mode, path, sha):
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
+    # def serialize(self):
+    #     return self.mode + b' ' + self.name + b'\x00' + bytes.fromhex(self.sha)
+
+
+def tree_parse_one(raw, start=0):
+    # Find the space terminator of the mode
+    x = raw.find(b' ', start)
+    assert (x - start == 5 or x - start == 6)
+
+    # Read the mode
+    mode = raw[start:x]
+
+    # Find the null terminator of the name
+    y = raw.find(b'\x00', x)
+    # Read the path
+    path = raw[x + 1:y]
+
+    # Read the SHA1 and convert to a hex string
+    # hex() adds a leading 0x, so we slice it off
+    sha = hex(int.from_bytes(raw[y + 1:y + 21], 'big'))[2:]
+
+    return y + 21, GitTreeLeaf(mode, path, sha)
+
+
+def tree_parse(raw):
+    max = len(raw)
+    ret = []
+    start = 0
+    while start < max:
+        start, leaf = tree_parse_one(raw, start)
+        ret.append(leaf)
+    return ret
+
+
+def tree_serialize(obj):
+    ret = b''
+    for leaf in obj.items:
+        ret += leaf.mode + b' ' + leaf.path + b'\x00'
+        sha = int(leaf.sha, 16)
+        ret += sha.to_bytes(20, byteorder="big")
+    return ret
+
+
+class GitTree(GitObject):
+    fmt = b'tree'
+
+    def deserialize(self, data):
+        self.items = tree_parse(data)
+
+    def serialize(self):
+        return tree_serialize(self)
+
+argsp = argsubparsers.add_parser("ls-tree", help="Pretty-print a tree object")
+argsp.add_argument("object", help="The object to display")
+
+def cmd_ls_tree(args):
+    repo = repo_find()
+    obj = object_read(repo, object_find(repo, args.object, fmt=b"tree"))
+    for leaf in obj.items:
+        paddle = "0" * (6 - len(leaf.mode) + leaf.mode.decode("ascii"))
+        # Git's ls-tree displays the type of the obejct pointed to
+        inner_obj = object_read(repo, leaf.sha).fmt.decode("ascii")
+        print(f"{paddle} {inner_obj} {leaf.sha}\t{leaf.path.decode('ascii')}")
+
+
+argsp = argsubparsers.add_parser("checkout", help="Checkout a commit inside of a directory.")
+argsp.add_argument("commit", help="The commit to checkout")
+argsp.add_argument("path", help="The path to checkout to")
+
+def cmd_checkout(args):
+    repo = repo_find()
+
+    obj = object_read(repo, object_find(repo, args.commit))
+
+    # If the object is a commit, we grab its tree
+    if obj.fmt == b'commit':
+        obj = object_read(repo, obj.key_value_list_with_message[b'tree'].decode("ascii"))
+
+    # Verify that path is an empty directory
+    if os.path.exists(args.path):
+        if not os.path.isdir(args.path):
+            raise Exception(f"{args.path} is not a directory")
+        if os.listdir(args.path):
+            raise Exception(f"{args.path} is not an empty directory")
+    else:
+        os.makedirs(args.path)
+
+    tree_checkout(repo, obj, os.path.realpath(args.path).encode())
+
+
+def tree_checkout(repo, tree, path):
+    for leaf in tree.items:
+        obj = object_read(repo, leaf.sha)
+        dest = os.path.join(path, leaf.path)
+
+        if obj.fmt == b'tree':
+            os.mkdir(dest)
+            tree_checkout(repo, obj, dest)
+        elif obj.fmt == b'blob':
+            with open(dest, 'wb') as f:
+                f.write(obj.blobdata)
