@@ -191,7 +191,7 @@ def get_status():
                entries_by_path[p].sha1.hex()}
     new = paths - entry_paths
     deleted = entry_paths - paths
-    return (sorted(changed), sorted(new), sorted(deleted))
+    return sorted(changed), sorted(new), sorted(deleted)
 
 
 def status():
