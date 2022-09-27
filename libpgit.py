@@ -12,7 +12,7 @@ argsubparsers = argparser.add_subparsers(title="Commands", dest="command")
 argsubparsers.required = True
 
 
-class GitRepository():
+class GitRepository:
     worktree = None
     gitdir = None
     conf = None
@@ -248,7 +248,33 @@ def object_find(repo, name, fmt=None, follow=True):
     If fmt is not None, require that the object is of given type.
     If follow is True, follow tag links.
     """
-    return name
+    sha = object_resolve(repo, name)
+    if not sha:
+        raise Exception(f"No such reference {name}")
+
+    if len(sha) > 1:
+        raise Exception("Ambiguous reference {0}: Candidates are:\n - {1}.".format(name, "\n - ".join(sha)))
+
+    sha = sha[0]
+    if not fmt:
+        return sha
+
+    while True:
+        obj = object_read(repo, sha)
+        if obj.fmt == fmt:
+            return sha
+        if obj.fmt != b"tag":
+            return None
+        if not follow:
+            return sha
+
+        # Follow tags
+        if obj.fmt == b"tag":
+            sha = obj.key_value_list_with_message[b'object'].decode("ascii")
+        elif obj.fmt == b"commit" and fmt == b"tree":
+            sha = obj.key_value_list_with_message[b'tree'].decode("ascii")
+        else:
+            return None
 
 
 def object_write(obj, actually_write=True):
@@ -329,7 +355,7 @@ def object_hash(fd, fmt, repo=None):
     return object_write(obj, repo)
 
 
-def kvlm_parse(raw, start=0, dct=None):
+def key_value_list_with_message_parse(raw, start=0, dct=None):
     if not dct:
         dct = collections.OrderedDict()
         # You CANNOT declare the argument as dct=OrderedDict()
@@ -377,7 +403,7 @@ def kvlm_parse(raw, start=0, dct=None):
     else:
         dct[key] = value
 
-    return kvlm_parse(raw, start=end + 1, dct=dct)
+    return key_value_list_with_message_parse(raw, start=end + 1, dct=dct)
 
 
 def key_value_list_with_message_serialize(key_value_list_with_message):
@@ -406,7 +432,7 @@ class GitCommit(GitObject):
     fmt = b'commit'
 
     def deserialize(self, data):
-        self.key_value_list_with_message = kvlm_parse(data)
+        self.key_value_list_with_message = key_value_list_with_message_parse(data)
 
     def serialize(self):
         return key_value_list_with_message_serialize(self.key_value_list_with_message)
@@ -443,10 +469,10 @@ def tree_parse_one(raw, start=0):
 
 
 def tree_parse(raw):
-    max = len(raw)
+    max_len = len(raw)
     ret = []
     start = 0
-    while start < max:
+    while start < max_len:
         start, leaf = tree_parse_one(raw, start)
         ret.append(leaf)
     return ret
@@ -470,8 +496,10 @@ class GitTree(GitObject):
     def serialize(self):
         return tree_serialize(self)
 
+
 argsp = argsubparsers.add_parser("ls-tree", help="Pretty-print a tree object")
 argsp.add_argument("object", help="The object to display")
+
 
 def cmd_ls_tree(args):
     repo = repo_find()
@@ -486,6 +514,7 @@ def cmd_ls_tree(args):
 argsp = argsubparsers.add_parser("checkout", help="Checkout a commit inside of a directory.")
 argsp.add_argument("commit", help="The commit to checkout")
 argsp.add_argument("path", help="The path to checkout to")
+
 
 def cmd_checkout(args):
     repo = repo_find()
@@ -519,3 +548,159 @@ def tree_checkout(repo, tree, path):
         elif obj.fmt == b'blob':
             with open(dest, 'wb') as f:
                 f.write(obj.blobdata)
+
+
+def ref_resolve(repo, ref):
+    with open(repo_file(repo, ref), 'r') as f:
+        # Drop final \n
+        data = f.read()[:-1]
+    if data.startswith('ref: '):
+        return ref_resolve(repo, data[5:])
+    else:
+        return data
+
+
+def ref_list(repo, path=None):
+    if not path:
+        path = repo_dir(repo, 'refs')
+    ret = collections.OrderedDict()
+    # Git shows refs sorted
+    # To do the same, we use an OrderedDict and sort the output of listdir
+    for ref in sorted(os.listdir(path)):
+        fullpath = os.path.join(path, ref)
+        if os.path.isdir(fullpath):
+            ret[ref] = ref_list(repo, fullpath)
+        else:
+            ret[ref] = ref_resolve(repo, fullpath)
+
+    return ret
+
+
+argsp = argsubparsers.add_parser("show-ref", help="List references in a repository")
+
+
+def cmd_show_ref(args):
+    repo = repo_find()
+    refs = ref_list(repo)
+
+
+def show_ref(repo, refs, with_hash=True, prefix=""):
+    for k, v in refs.items():
+        if type(v) == str:
+            print("{0}{1}{2}".format(
+                v + " " if with_hash else "",
+                prefix + "/" if prefix else "",
+                k))
+        else:
+            show_ref(repo, v, with_hash=with_hash, prefix="{0}{1}{2}".format(prefix, "/" if prefix else "", k))
+
+
+class GitTag(GitCommit):
+    fmt = b'tag'
+
+
+argsp = argsubparsers.add_parser("tag", help="List, create tags")
+argsp.add_argument("-a", action="store_true", dest="create_tag_object", help="Create an annotated tag")
+argsp.add_argument("name", help="The name of the tag")
+argsp.add_argument("object", default="HEAD", nargs="?", help="The object to point to")
+
+
+def cmd_tag(args):
+    repo = repo_find()
+
+    if args.name:
+        tag_create(args.name, args.object, type="object" if args.create_tag_object else "ref")
+    else:
+        refs = ref_list(repo)
+        show_ref(repo, refs["tags"], with_hash=False)
+
+
+def tag_create(repo: GitRepository, name, reference, create_tag_object):
+    # get the GitObject from the object reference
+    sha = object_find(repo, reference)
+
+    if create_tag_object:
+        # create tag object (commit)
+        tag = GitTag(repo)
+        tag.key_value_list_with_message = collections.OrderedDict()
+        tag.key_value_list_with_message[b'object'] = sha.encode()
+        tag.key_value_list_with_message[b'type'] = b'commit'
+        tag.key_value_list_with_message[b'tag'] = name.encode()
+        tag.key_value_list_with_message[b'tagger'] = b'The soul eater <grim@reaper.net>'
+        tag.key_value_list_with_message[b''] = b'This is the commit message that should have come from the user\n'
+        tag_sha = object_write(tag, repo)
+        # create reference
+        ref_create(repo, "tags/" + name, tag_sha)
+    else:
+        # create lightweight tag (ref)
+        ref_create(repo, "tags/" + name, sha)
+
+
+def ref_create(repo, ref_name, sha):
+    with open(repo_file(repo, "refs/" + ref_name), 'w') as fp:
+        fp.write(sha + "\n")
+
+
+def object_resolve(repo, name):
+    """
+    Resolve name to an object hash in repo
+    The function is aware of:
+        the HEAD literal
+        short and long hashes
+        tags
+        branches
+        remote branches
+    """
+    candidates = []
+    hash_re = re.compile(r"^[0-9a-fA-F]{4,40}$")
+
+    # Abort empty string
+    if not name.strip():
+        return None
+
+    # HEAD
+    if name == "HEAD":
+        return [ref_resolve(repo, "HEAD")]
+
+    if hash_re.match(name):
+        if len(name) == 40:
+            # A complete hash
+            return [name.lower()]
+
+    # len 4 hash be the minimal length
+    # git consider it a short hash
+    name = name.lower()
+    prefix = name[0:2]
+    path = repo_dir(repo, "objects", prefix, mkdir=False)
+    if path:
+        remain = name[2:]
+        for f in os.listdir(path):
+            if f.startswith(remain):
+                candidates.append(prefix + f)
+
+    return candidates
+
+
+argsp = argsubparsers.add_parser(
+    "rev-parse",
+    help="Parse revision (or other objects )identifiers")
+
+argsp.add_argument("--wyag-type",
+                   metavar="type",
+                   dest="type",
+                   choices=["blob", "commit", "tag", "tree"],
+                   default=None,
+                   help="Specify the expected type")
+
+argsp.add_argument("name",
+                   help="The name to parse")
+
+
+def cmd_rev_parse(args):
+    if args.type:
+        fmt = args.type.encode()
+
+    repo = repo_find()
+    print(object_find(repo, args.name, fmt, follow=True))
+
+
