@@ -562,7 +562,7 @@ if __name__ == '__main__':
 
     # git push
     sub_parser = sub_parsers.add_parser('push', help='push master branch to given git server URL')
-    sub_parser.add_argument('git_url', help='URL of git repo, eg: https://github.com/qazxcdswe123/pgit.git')
+    sub_parser.add_argument('git_url', help='URL of git repo, eg: https://github.com/qazxcdswe123/pygit.git')
     sub_parser.add_argument('-p', '--password', help='password to use for authentication (uses GIT_PASSWORD '
                                                      'environment variable by default)')
     sub_parser.add_argument('-u', '--username', help='username to use for authentication (uses GIT_USERNAME '
