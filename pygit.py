@@ -365,8 +365,8 @@ def build_lines_data(lines):
     return b''.join(result)
 
 
-def http_request(url, username, password):
-    response = requests.get(url, auth=(username, password))
+def http_request(url, username, password, data=None):
+    response = requests.get(url, auth=(username, password), data=data)
     response.raise_for_status()
     return response.content
 
@@ -499,7 +499,7 @@ def push(git_url, username=None, password=None):
     lines = ['{} {} refs/heads/master\x00 report-status'.format(remote_sha1 or ('0' * 40), local_sha1).encode()]
     data = build_lines_data(lines) + create_pack(missing)
     url = git_url + '/git-receive-pack'
-    response = http_request(url, username, password)
+    response = http_request(url, username, password, data)
     lines = extract_lines(response)
     assert len(lines) >= 2, 'expected at least 2 lines, got {}'.format(len(lines))
     assert lines[0] == b'unpack ok\n', "expected line 1 b'unpack ok', got: {}".format(lines[0])
