@@ -87,7 +87,7 @@ def find_object(sha1_prefix):
 def read_object(sha1_prefix):
     """
     Read object with given SHA-1 prefix and return tuple of
-    (object_type, data_bytes), or raise ValueError if not found.
+    (object_type, data_bytes), or raise ValueError(from find_object) if not found.
     """
     path = find_object(sha1_prefix)
     full_data = zlib.decompress(read_file(path))
